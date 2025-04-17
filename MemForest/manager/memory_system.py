@@ -670,7 +670,7 @@ class MemorySystem:
             if operation == 'add' and final_embedding is None:
                 try:
                     content_to_embed = self._get_formatted_content_with_history(memory_unit, 1)
-                    final_embedding = self.embedding_handler.get_embedding(content_to_embed)
+                    final_embedding = self.embedding_handler.get_embedding(content_to_embed).to_list()
                 except Exception as e:
                     final_embedding = None
             elif operation == 'update' and final_embedding is None:
@@ -687,7 +687,7 @@ class MemorySystem:
             milvus_data = None
             if final_embedding is not None:
                 milvus_data = {
-                    "id": memory_unit.id, "embedding": final_embedding.tolist(),
+                    "id": memory_unit.id, "embedding": final_embedding,
                     "parent_id": memory_unit.parent_id, "content": memory_unit.content,
                     "creation_time": memory_unit.creation_time.timestamp() if memory_unit.creation_time else None,
                     "end_time": memory_unit.end_time.timestamp() if memory_unit.end_time else None,
@@ -1372,15 +1372,15 @@ class MemorySystem:
                 last_context_unit.next_id = memory_unit.id
                 memory_unit.pre_id = last_context_unit.id
                 # Stage update for *previous* unit (linking change)
-                self._stage_memory_unit_update(last_context_unit, operation='update',
-                                               update_session_metadata=False) 
+                # self._stage_memory_unit_update(last_context_unit, operation='update',
+                #                                update_session_metadata=False)
 
         self.context.append(memory_unit)
         # Add to cache immediately so _get_formatted_content works
         self.memory_units_cache[memory_unit.id] = memory_unit
         # Also stage the *new* unit itself (as 'add' initially)
         # Embedding will be generated/checked during staging
-        self._stage_memory_unit_update(memory_unit, operation='add')
+        # self._stage_memory_unit_update(memory_unit, operation='add')
 
         # Evict oldest if max length exceeded
         if len(self.context) > self._max_context_length:
@@ -1637,9 +1637,9 @@ class MemorySystem:
             try:
                 # Basic type checking and quoting
                 # Ensure var name is valid Milvus field name (alphanumeric + underscore)
-                if not re.fullmatch(r"[a-zA-Z0-9_]+", var):
-                    print(f"Warning: Invalid character in filter variable name: {var}. Skipping filter.")
-                    continue
+                # if not re.fullmatch(r"[a-zA-Z0-9_]+", var):
+                #     print(f"Warning: Invalid character in filter variable name: {var}. Skipping filter.")
+                #     continue
 
                 op = op.strip().lower()
                 supported_ops = ['==', '!=', '>', '>=', '<', '<=', 'in', 'not in', 'like']  # Extend as needed
@@ -1767,14 +1767,14 @@ class MemorySystem:
                                 pre_id=entity_data.get("pre_id"),
                                 next_id=entity_data.get("next_id")
                             )
-                            embedding = np.array(entity_data.get('embedding', []))
-                            if len(embedding) > 0:
+                            embedding = np.array(entity_data.get('embedding'))
+                            if embedding is not None:
                                 milvus_results.append((unit, score, embedding))
                             else:
                                 print(f"Warning: Unit {unit.id} from Milvus search missing embedding.")
                         except Exception as e:
                             print(
-                                f"Error converting Milvus hit to MemoryUnit (ID: {entity_data.get('id', 'N/A')}): {e}")
+                                f"Error converting Milvus hit to MemoryUnit (ID: {entity_data.get('id')}): {e}")
 
             elif filter_expr:  # Only filtering, no vector search
                 # Use query method for filtering
@@ -1802,14 +1802,14 @@ class MemorySystem:
                             pre_id=entity_data.get("pre_id"),
                             next_id=entity_data.get("next_id")
                         )
-                        embedding = np.array(entity_data.get('embedding', []))
-                        if len(embedding) > 0:
+                        embedding = np.array(entity_data.get('embedding'))
+                        if embedding is not None:
                             milvus_results.append((unit, 0.0, embedding))  # Score is 0 for filter-only query
                         else:
                             print(f"Warning: Unit {unit.id} from Milvus query missing embedding.")
                     except Exception as e:
                         print(
-                            f"Error converting Milvus query result to MemoryUnit (ID: {entity_data.get('id', 'N/A')}): {e}")
+                            f"Error converting Milvus query result to MemoryUnit (ID: {entity_data.get('id')}): {e}")
             else:
                 # No query vector and no filters - invalid query? Or return random units?
                 print("Warning: LTM query called with no query vector and no filters.")
@@ -1856,7 +1856,7 @@ class MemorySystem:
                     try:
                         results = self.vector_store.get(pre_id)
                         if results:
-                            pre_unit = results
+                            pre_unit = MemoryUnit.from_dict(results)
                             self.memory_units_cache[pre_id] = pre_unit  # Cache it
                     except Exception as e:
                         print(f"Error fetching neighbor {pre_id} from LTM: {e}")
@@ -1865,7 +1865,7 @@ class MemorySystem:
                 try:
                     results = self.external_vector_store.get(pre_id)
                     if results:
-                        pre_unit = results
+                        pre_unit = MemoryUnit.from_dict(results)
                 except Exception as e:
                     print(f"Error fetching neighbor {pre_id} from external LTM: {e}")
 
@@ -1879,7 +1879,7 @@ class MemorySystem:
                     try:
                         results = self.vector_store.get(next_id)
                         if results:
-                            next_unit = results
+                            next_unit = MemoryUnit.from_dict(results)
                             self.memory_units_cache[next_id] = next_unit  # Cache it
                     except Exception as e:
                         print(f"Error fetching neighbor {next_id} from LTM: {e}")
@@ -1887,7 +1887,7 @@ class MemorySystem:
                 try:
                     results = self.external_vector_store.get(next_id)
                     if results:
-                        next_unit = results
+                        next_unit = MemoryUnit.from_dict(results)
                         # self.external_memory_units_cache[next_id] = next_unit
                 except Exception as e:
                     print(f"Error fetching neighbor {next_id} from external LTM: {e}")
@@ -2258,7 +2258,7 @@ class MemorySystem:
             try:
                 results = self.external_vector_store.get(self.external_ltm_id)
                 if results:
-                    history_summary_unit = results
+                    history_summary_unit = MemoryUnit.from_dict(results)
             except Exception as e:
                 # print(f"Could not fetch external history summary: {e}")
                 pass
