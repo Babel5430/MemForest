@@ -116,7 +116,7 @@ The core data structure is the `MemoryUnit`:
 Clone the repository:
 
 ```bash
-git clone <repository_url>
+git clone https://github.com/Babel5430/MemForest.git
 cd MemForest
 ```
 
