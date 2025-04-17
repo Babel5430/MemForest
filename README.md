@@ -116,7 +116,7 @@ MemForest 将记忆组织成三个概念层级，通过 `MemoryUnit` 的 `rank` 
 克隆仓库：
 
 ```bash
-git clone <repository_url>
+git clone https://github.com/Babel5430/MemForest.git
 cd MemForest
 ```
 
