@@ -189,11 +189,11 @@ def load_memory_units_for_session(conn: sqlite3.Connection, session_id: str) -> 
     """Loads all memory units associated with a given session ID."""
     if not session_id:
         return {}
-    sql = f"SELECT * FROM memory_units WHERE group_id = ?"
+    sql = f"SELECT * FROM memory_units WHERE group_id = ? OR id = ?"
     units = {}
     try:
         cursor = conn.cursor()
-        cursor.execute(sql, (session_id,))
+        cursor.execute(sql, (session_id,session_id,))
         rows = cursor.fetchall()
         for row in rows:
             unit = _row_to_memory_unit(row)
