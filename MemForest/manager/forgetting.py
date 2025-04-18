@@ -60,6 +60,8 @@ def forget_memories(
     if not ltm.session_ids:
         print(f"LTM {ltm_id} has no sessions. Nothing to forget.")
         return [], set(), set()
+
+    session_ids_set_in_ltm = set(ltm.session_ids)
     # print(f"Loaded {len(session_objects_map)} sessions for LTM {ltm_id}.")
 
     # 2. Load ALL MemoryUnits associated with these sessions
@@ -72,7 +74,7 @@ def forget_memories(
     for unit_id, unit in all_units_map.items():
         # Check if it's a leaf node (no children) AND not marked 'never_delete'
         if (not unit.children_ids and
-                not unit.never_delete):
+                not unit.never_delete and unit.rank == 0):
             eligible_leaves.append(unit)
 
     # print(f"Found {len(eligible_leaves)} eligible leaf units for forgetting.")
@@ -104,25 +106,27 @@ def forget_memories(
     units_to_delete = sorted_leaves[:delete_count]
     deleted_unit_ids: List[str] = [unit.id for unit in units_to_delete]
     updated_parent_ids: Set[str] = set()
-    updated_session_ids: Set[str] = set()
+    updated_group_ids: Set[str] = set()
 
     for unit in units_to_delete:
+        # Find session and mark for update
+        group_id = unit.group_id
+        if not group_id or group_id not in session_ids_set_in_ltm:
+            print(f"Error: Could not find session mapping for eligible unit {unit.id}.")
+            continue
+        else:
+            updated_group_ids.add(group_id)
+
         if unit.parent_id and unit.parent_id in all_units_map:  # Check parent is loaded
             updated_parent_ids.add(unit.parent_id)
         elif unit.parent_id:
             print(
                 f"Warning: Parent {unit.parent_id} of unit {unit.id} not found in loaded units. Cannot mark for update.")
 
-        # Find session and mark for update
-        session_id = unit.group_id
-        if session_id:
-            updated_session_ids.add(session_id)
-        else:
-            print(f"Error: Could not find session mapping for eligible unit {unit.id}.")
 
     # print(f"Selected {len(deleted_unit_ids)} units for deletion.")
     # print(f"Identified {len(updated_parent_ids)} parent units needing update.")
     # print(f"Identified {len(updated_session_ids)} sessions needing update.")
 
     # 7. Return the lists of IDs for MemorySystem to handle persistence
-    return deleted_unit_ids, updated_parent_ids, updated_session_ids
+    return deleted_unit_ids, updated_parent_ids, updated_group_ids
