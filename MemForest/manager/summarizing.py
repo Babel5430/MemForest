@@ -5,6 +5,8 @@ Relies on MemorySystem for data loading and persistence.
 
 import datetime
 from typing import List, Dict, Optional, Any, Tuple
+import json
+import re
 
 try:
     from MemForest.memory.memory_unit import MemoryUnit
@@ -108,7 +110,7 @@ def summarize_memory_hierarchy(
             elif next_level:
                 context = [next_level[-1]]
 
-            print(f"Summarizing group of {len(group)} units (Rank {summary_rank})...")
+            print(f"Summarizing group of {len(group)} units (Rank {base_rank})...")
             summary_content = summarize_memory(
                 context + group,  # Provide context if available
                 llm,
@@ -128,7 +130,7 @@ def summarize_memory_hierarchy(
                 creation_time=start_time,
                 end_time=end_time,
                 source=role,
-                rank=summary_rank,
+                rank=base_rank,
                 metadata={"action": "summary"},
                 group_id=root_id
             )
@@ -142,6 +144,26 @@ def summarize_memory_hierarchy(
                     if not existing_units_map[unit.id].parent_id:
                         existing_units_map[unit.id].parent_id = summary_unit.id
                         updated_original_units_map[unit.id] = existing_units_map[unit.id]
+                    if base_rank == 0:
+                        existing_units_map[unit.id].group_id = root_id
+                        updated_original_units_map[unit.id] = existing_units_map[unit.id]
+                    if base_rank == 1:
+                        current_group_ids = existing_units_map[unit.id].group_id
+                        if current_group_ids is None:
+                            new_group_ids = root_id
+                        elif re.match(r"^\[\S+]$", current_group_ids):
+                            try:
+                                new_group_ids = json.loads(current_group_ids)
+                                new_group_ids.append(root_id)
+                                new_group_ids = json.dumps(new_group_ids)
+                            except Exception as e:
+                                print(f"Error: Current group_id for session {unit.id} is invalid. {e}")
+                                new_group_ids = current_group_ids
+                        else:
+                            new_group_ids = current_group_ids
+                        existing_units_map[unit.id].group_id = new_group_ids
+                        updated_original_units_map[unit.id] = existing_units_map[unit.id]
+
                 else:
                     print(f"Warning: Unit {unit.id} from group not found in existing_units_map.")
 
@@ -461,7 +483,7 @@ def summarize_long_term_memory(
         ltm.creation_time = root_ltm_unit.creation_time
         ltm.end_time = root_ltm_unit.end_time
         # LTM summary unit IDs are the new summaries created at rank 2
-        ltm.summary_unit_ids = [unit.id for unit in new_ltm_summary_units if unit.rank == 2]
+        ltm.summary_unit_ids = new_ltm_summary_units
 
         # Combine all new units and updated units
         all_new_units = newly_created_session_summaries + new_ltm_summary_units
