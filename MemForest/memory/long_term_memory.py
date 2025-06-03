@@ -1,7 +1,6 @@
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from uuid import uuid4
-from MemForest.memory.memory_unit import MemoryUnit
 DEFAULT_STORAGE_PATH = "memory_storage"
 
 class LongTermMemory:

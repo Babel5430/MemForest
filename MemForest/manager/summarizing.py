@@ -1,8 +1,3 @@
-"""
-Module for summarizing memory units into hierarchical structures.
-Relies on MemorySystem for data loading and persistence.
-"""
-
 import datetime
 from typing import List, Dict, Optional, Any, Tuple
 import json
@@ -13,21 +8,17 @@ try:
     from MemForest.memory.long_term_memory import LongTermMemory
     from MemForest.memory.session_memory import SessionMemory
     from MemForest.utils.llm_utils import summarize_memory, get_num_tokens
-    from langchain_core.language_models import BaseChatModel
 except ImportError:
     from ..memory.memory_unit import MemoryUnit
     from ..memory.long_term_memory import LongTermMemory
     from ..memory.session_memory import SessionMemory
     from ..utils.llm_utils import summarize_memory, get_num_tokens
-    from langchain_core.language_models import BaseChatModel
 
-
-
-def summarize_memory_hierarchy(
+async def summarize_memory_hierarchy(
         units_to_summarize: List[MemoryUnit],
         existing_units_map: Dict[str, MemoryUnit],  # Pass currently known/loaded units relevant to this hierarchy
         root_id: str,
-        llm: BaseChatModel,
+        llm: 'BaseChatModel',
         max_group_size: int,
         max_token_count: int,
         history_memory: Optional[MemoryUnit] = None,
@@ -111,11 +102,12 @@ def summarize_memory_hierarchy(
                 context = [next_level[-1]]
 
             print(f"Summarizing group of {len(group)} units (Rank {base_rank})...")
-            summary_content = summarize_memory(
-                context + group,  # Provide context if available
+            summary_content = await summarize_memory(
+                context + group,
                 llm,
                 system_message=system_message
             )
+            print(summary_content)
 
             if not summary_content or not summary_content.strip():
                 print("Warning: Summarization returned empty content. Skipping group.")
@@ -142,7 +134,7 @@ def summarize_memory_hierarchy(
                 if unit.id in existing_units_map:  # Ensure unit is in the map
                     # Check if parent is already set to avoid overwriting intermediate summaries
                     if not existing_units_map[unit.id].parent_id:
-                        existing_units_map[unit.id].parent_id = summary_unit.id
+                        existing_units_map[unit.id].parent_id = summary_unit.id if len(groups) > 1 else root_id
                         updated_original_units_map[unit.id] = existing_units_map[unit.id]
                     if base_rank == 0:
                         existing_units_map[unit.id].group_id = root_id
@@ -171,6 +163,9 @@ def summarize_memory_hierarchy(
             new_summary_units.append(summary_unit)
             existing_units_map[summary_unit.id] = summary_unit
 
+        if len(next_level) == 1:
+            next_level[0].id = root_id
+            next_level[0].group_id = None
         current_level = next_level  # Move to the next level of summaries
 
     # --- Final Root Unit Assignment ---
@@ -198,7 +193,7 @@ def summarize_memory_hierarchy(
             context = [history_memory]
         elif current_level:
             context = [current_level[-1]]
-        summary_content = summarize_memory(context + current_level, llm, system_message=system_message)
+        summary_content = await summarize_memory(context + current_level, llm, system_message=system_message)
         if summary_content:
             valid_times = [u.creation_time for u in current_level if u.creation_time]
             start_time = min(valid_times) if valid_times else None
@@ -239,10 +234,10 @@ def summarize_memory_hierarchy(
 # --- Session Summarization ---
 
 # Renamed from summarize_session_memories to summarize_session
-def summarize_session(
+async def summarize_session(
         memory_system: 'MemorySystem',
         session_id: str,
-        llm: BaseChatModel,
+        llm: 'BaseChatModel',
         max_group_size: int,
         max_token_count: int,
         history_memory: Optional[MemoryUnit] = None,
@@ -270,14 +265,14 @@ def summarize_session(
     # print(f"Starting summarization for session: {session_id}...")
 
     # 1. Load Session object
-    session = memory_system._get_session_memory(session_id, use_cache=True)
+    # Assuming _get_session_memory is an async method
+    session = await memory_system._get_session_memory(session_id, use_cache=True)
     if not session:
         print(f"Error: Session {session_id} not found.")
         return None, [], []
 
     # 2. Load MemoryUnits for this session
-    # Use a helper method in MemorySystem to handle loading based on persistence mode
-    session_units_map = memory_system._load_units_for_session(session_id)
+    session_units_map = await memory_system._load_units_for_session(session_id)
     if not session_units_map:
         print(f"Warning: No memory units found or loaded for session {session_id}. Cannot summarize.")
         # Return the session object unmodified? Or None? Let's return unmodified.
@@ -295,7 +290,7 @@ def summarize_session(
     if not units_to_summarize:
         print(f"No summarizable units found for session {session_id}.")
         # Check if a session summary unit already exists
-        session_summary_unit = memory_system._get_memory_unit(session_id)
+        session_summary_unit = await memory_system._get_memory_unit(session_id)
         if session_summary_unit and session_summary_unit.rank == 1:
             print(f"Session {session_id} appears to be already summarized.")
             return session, [], []  # Return existing session, no new/updated units
@@ -307,7 +302,7 @@ def summarize_session(
 
     # 4. Perform summarization using the hierarchy function
     # The session summary unit's ID should be the session_id
-    root_unit, new_units, updated_units = summarize_memory_hierarchy(
+    root_unit, new_units, updated_units = await summarize_memory_hierarchy(
         units_to_summarize=units_to_summarize,
         existing_units_map=relevant_units_map,  # Pass the map of units involved
         root_id=session_id,  # Target ID for the session summary unit
@@ -340,10 +335,10 @@ def summarize_session(
 
 # --- Long-Term Memory Summarization ---
 
-def summarize_long_term_memory(
+async def summarize_long_term_memory(
         memory_system: 'MemorySystem',  # Pass the memory system instance
         ltm_id: str,
-        llm: BaseChatModel,
+        llm: 'BaseChatModel',
         max_group_size: int,
         max_token_count: int,
         history_memory: Optional[MemoryUnit] = None,
@@ -374,8 +369,7 @@ def summarize_long_term_memory(
     # 1. Load LTM object
     ltm = memory_system.long_term_memory
     if not ltm or ltm.id != ltm_id:
-        # Optionally load specific LTM if managing multiple ones
-        ltm = memory_system._get_long_term_memory(ltm_id)
+        ltm = await memory_system._get_long_term_memory(ltm_id)
         if not ltm:
             print(f"Error: Long-term memory {ltm_id} not found.")
             return None, [], []
@@ -385,7 +379,7 @@ def summarize_long_term_memory(
         return ltm, [], []
 
     # 2. Load Session objects associated with this LTM
-    session_objects_map = memory_system._load_sessions(ltm.session_ids)
+    session_objects_map = await memory_system._load_sessions(ltm.session_ids)
 
     # 3. Identify/Load session summary units (MemoryUnit with id == session_id)
     session_summary_units_to_summarize: List[MemoryUnit] = []
@@ -409,7 +403,7 @@ def summarize_long_term_memory(
             print(f"Warning: Session {session_id} listed in LTM but not loaded. Skipping.")
             continue
 
-        session_summary_unit = memory_system._get_memory_unit(session_id, use_cache=True)
+        session_summary_unit = await memory_system._get_memory_unit(session_id, use_cache=True)
 
         if session_summary_unit and session_summary_unit.rank == 1:
             # Existing session summary found
@@ -422,7 +416,7 @@ def summarize_long_term_memory(
             print(f"Session {session_id} needs summarization.")
             sessions_needing_summary.append(session_id)
             # Summarize the session - pass the last known summary (could be history or previous session summary)
-            updated_session, new_s_units, updated_s_units = summarize_session(
+            updated_session, new_s_units, updated_s_units = await summarize_session(
                 memory_system=memory_system,
                 session_id=session_id,
                 llm=llm,
@@ -435,15 +429,16 @@ def summarize_long_term_memory(
 
             # new_s_unit have intersection with updated_s_unit
             if updated_session:
-                memory_system._stage_session_memory_update(updated_session)
+                await memory_system._stage_session_memory_update(updated_session)
             if new_s_units:
-                memory_system._stage_memory_units_update(new_s_units)
+                # Assuming _stage_memory_units_update is an async method
+                await memory_system._stage_memory_units_update(new_s_units)
                 newly_created_session_summaries.extend(new_s_units)
                 # Add new units to relevant map for LTM summary
                 for unit in new_s_units: all_relevant_units_map[unit.id] = unit
 
             if updated_s_units:
-                memory_system._stage_memory_units_update(updated_s_units, operation='update')
+                await memory_system._stage_memory_units_update(updated_s_units, operation='edge_update')
                 updated_session_units.extend(updated_s_units)
                 # Update units in relevant map
                 for unit in updated_s_units: all_relevant_units_map[unit.id] = unit
@@ -464,7 +459,7 @@ def summarize_long_term_memory(
 
     # 4. Summarize the collected session summary units
     # LTM summary unit's ID should be the ltm_id
-    root_ltm_unit, new_ltm_summary_units, updated_session_summaries = summarize_memory_hierarchy(
+    root_ltm_unit, new_ltm_summary_units, updated_session_summaries = await summarize_memory_hierarchy(
         units_to_summarize=session_summary_units_to_summarize,
         existing_units_map=all_relevant_units_map,  # Pass map containing session summaries
         root_id=ltm_id,  # Target ID for the LTM summary unit

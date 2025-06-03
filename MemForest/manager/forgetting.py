@@ -20,7 +20,7 @@ MIN_DELETE_PERCENTAGE = 0.0
 MAX_DELETE_PERCENTAGE = 1.0
 
 
-def forget_memories(
+async def forget_memories(
         memory_system: 'MemorySystem',
         ltm_id: str,
         delete_percentage: float = 0.15,
@@ -52,7 +52,8 @@ def forget_memories(
     # 1. Load LTM object
     ltm = memory_system.long_term_memory
     if not ltm or ltm.id != ltm_id:
-        ltm = memory_system._get_long_term_memory(ltm_id)  # Assumes method exists
+        # Assuming _get_long_term_memory is an async method
+        ltm = await memory_system._get_long_term_memory(ltm_id)
         if not ltm:
             print(f"Error: LTM {ltm_id} not found for forgetting.")
             return [], set(), set()
@@ -66,7 +67,7 @@ def forget_memories(
 
     # 2. Load ALL MemoryUnits associated with these sessions
 
-    all_units_map = memory_system.memory_units_cache  # Assumes helper method
+    all_units_map = memory_system.memory_units_cache
     # print(f"Loaded {len(all_units_map)} memory unit objects.")
 
     # 3. Identify eligible leaf nodes within this LTM's scope

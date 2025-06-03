@@ -1,8 +1,7 @@
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 from uuid import uuid4
-
-from langchain_core.messages import BaseMessage, HumanMessage, ChatMessage, SystemMessage, AIMessage
+from langchain_core.messages import ChatMessage
 DEFAULT_STORAGE_PATH = "memory_storage"
 
 class MemoryUnit:
@@ -21,6 +20,7 @@ class MemoryUnit:
     pre_id: Optional[str] # ID of the previous memory_unit in the session if exists.
     next_id: Optional[str]
     metadata: Optional[Dict[str,Any]]
+    group_id: Optional[Union[str,List[str]]] # For session summary unit, group_id can be a series of ltm_ids. For memory units of rank 0, it is the session id
 
     def __init__(
         self,
@@ -38,7 +38,7 @@ class MemoryUnit:
         rank: int = 0,
         pre_id: Optional[str] = None,
         next_id: Optional[str] = None,
-        group_id: Optional[str] = None
+        group_id: Optional[Union[str,List[str]]] = None
     ):
         self.id = memory_id if memory_id else str(uuid4())
         self.parent_id = parent_id
@@ -77,40 +77,42 @@ class MemoryUnit:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MemoryUnit":
+        results_copy = data.copy()
+        for key in ['creation_time', 'end_time']:
+            if key in results_copy and isinstance(results_copy[key], (int, float)):
+                results_copy[key] = datetime.fromtimestamp(results_copy[key])
+            elif key in results_copy and isinstance(results_copy[key], str):
+                try:
+                    results_copy[key] = datetime.fromisoformat(results_copy[key])
+                except:
+                    results_copy[key] = None
         return cls(
-            content=data["content"],
-            parent_id=data.get("parent_id"),
-            creation_time=datetime.fromisoformat(data["creation_time"]) if data.get("creation_time") else None,
-            end_time=datetime.fromisoformat(data["end_time"]) if data.get("end_time") else None,
-            source=data.get("source"),
-            metadata=data.get("metadata"),
-            last_visit=data.get("last_visit", 0),
-            visit_count=data.get("visit_count", 0),
-            never_delete=data.get("never_delete", False),
-            children_ids=data.get("children_ids", []),
-            memory_id=data["id"],
-            rank=data['rank'],
-            pre_id=data["pre_id"],
-            next_id=data["next_id"],
-            group_id=data["group_id"]
+            content=results_copy["content"],
+            parent_id=results_copy.get("parent_id"),
+            creation_time=results_copy["creation_time"] if results_copy.get("creation_time") else None,
+            end_time=results_copy["end_time"] if results_copy.get("end_time") else None,
+            source=results_copy.get("source"),
+            metadata=results_copy.get("metadata"),
+            last_visit=results_copy.get("last_visit", 0),
+            visit_count=results_copy.get("visit_count", 0),
+            never_delete=results_copy.get("never_delete", False),
+            children_ids=results_copy.get("children_ids", []),
+            memory_id=results_copy["id"],
+            rank=results_copy['rank'],
+            pre_id=results_copy["pre_id"],
+            next_id=results_copy["next_id"],
+            group_id=results_copy["group_id"]
         )
 
-    def to_langchain_message(self) -> BaseMessage:
+    def to_langchain_message(self) -> 'BaseMessage':
         metadata = {k:v for k,v in self.metadata.items()}
         metadata['source'] = self.source
         metadata['creation_time'] = self.creation_time
         metadata['end_time'] = self.end_time
-        if self.source.lower() == "user":
-            return HumanMessage(content=self.content, additional_kwargs=metadata)
-        elif self.source.lower() == "system":
-            return SystemMessage(content=self.content, additional_kwargs=metadata)
-        elif self.source.lower() in ["ai","ai-summary"]:
-            return AIMessage(content=self.content, additional_kwargs=metadata)
-        else:
-            return ChatMessage(content=self.content, role=self.source, additional_kwargs=metadata)
+        return ChatMessage(content=self.content, role=self.source, additional_kwargs=metadata)
 
     @classmethod
-    def from_langchain_message(cls, message: BaseMessage,
+    def from_langchain_message(cls, message: 'BaseMessage',
                                parent_id: Optional[str] = None,
                                creation_time: Optional[datetime] = None,
                                end_time: Optional[datetime] = None,
@@ -124,17 +126,10 @@ class MemoryUnit:
                                rank: int = 0,
                                pre_id: Optional[str] = None,
                                next_id: Optional[str] = None,
-                               group_id: Optional[str] = None
+                               group_id: Optional[Union[str,List[str]]] = None
                                ) -> "MemoryUnit":
         if not source:
-            if isinstance(message, HumanMessage):
-                source = "user"
-            elif isinstance(message, SystemMessage):
-                source = "system"
-            elif isinstance(message, AIMessage):
-                source = "ai"
-            elif isinstance(message, ChatMessage):
-                source = message.role
+            source = message.role
         return cls(
             content=message.content,
             parent_id=parent_id,

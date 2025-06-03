@@ -4,9 +4,8 @@ Utilities for LLM-related operations including summarization and token counting.
 
 from typing import List, Dict, Optional, Any
 from MemForest.memory.memory_unit import MemoryUnit
-import tiktoken
-from langchain_core.language_models import BaseChatModel
-from transformers import AutoTokenizer
+# import tiktoken
+# from transformers import AutoTokenizer
 
 # Initialize tokenizer
 
@@ -35,16 +34,17 @@ def get_num_tokens(memory_unit: MemoryUnit, model: str = "gpt-3.5-turbo-0613") -
     Returns:
         Number of tokens
     """
-    try:
-        encoding = tiktoken.encoding_for_model(model)
-    except KeyError:
-        encoding = tiktoken.get_encoding("cl100k_base")
-    return len(encoding.encode(memory_unit.content)) + 1
+    # try:
+    #     encoding = tiktoken.encoding_for_model(model)
+    # except KeyError:
+    #     encoding = tiktoken.get_encoding("cl100k_base")
+    # return len(encoding.encode(memory_unit.content)) + 1
+    return len(memory_unit.content) + 1
 
 
-def summarize_memory(
+async def summarize_memory(
         memory_units: List[MemoryUnit],
-        llm: BaseChatModel,
+        llm: 'BaseChatModel',
         system_message: Optional[List[Dict[str, Any]]] = DEFAULT_SYSTEM_MESSAGE,
         logit_bias: Optional[Dict[Any, Any]] = None
 ) -> Optional[str]:
@@ -72,7 +72,7 @@ def summarize_memory(
     }]
 
     messages = system_message + history
-    response = llm.invoke(
+    response = await llm.ainvoke(
         messages,
         max_tokens=2000,
         temperature=0.3,
@@ -83,21 +83,20 @@ def summarize_memory(
 
     return response.content if response else None
 
-
-def get_blocked_words_bias(blocked_words: List[str]) -> Dict[str, int]:
-    """
-    Create logit bias against certain words.
-
-    Args:
-        blocked_words: List of words to block
-
-    Returns:
-        Dictionary of token IDs to bias values
-    """
-    tokenizer = AutoTokenizer.from_pretrained('deepseek_v3', trust_remote_code=True)
-    blocked_tokens = []
-    for word in blocked_words:
-        blocked_tokens.extend(tokenizer.tokenize(word))
-
-    blocked_token_ids = tokenizer.convert_tokens_to_ids(blocked_tokens)
-    return {str(token_id): -200 for token_id in blocked_token_ids}
+# def get_blocked_words_bias(blocked_words: List[str]) -> Dict[str, int]:
+#     """
+#     Create logit bias against certain words.
+#
+#     Args:
+#         blocked_words: List of words to block
+#
+#     Returns:
+#         Dictionary of token IDs to bias values
+#     """
+#     tokenizer = AutoTokenizer.from_pretrained('deepseek_v3', trust_remote_code=True)
+#     blocked_tokens = []
+#     for word in blocked_words:
+#         blocked_tokens.extend(tokenizer.tokenize(word))
+#
+#     blocked_token_ids = tokenizer.convert_tokens_to_ids(blocked_tokens)
+#     return {str(token_id): -200 for token_id in blocked_token_ids}
