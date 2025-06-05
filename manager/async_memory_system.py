@@ -1425,7 +1425,7 @@ class AsyncMemorySystem:
 
     async def clear_all(self):
         """Async: Clears the current conversation context and STM."""
-        await self.ensure_initialized()
+        # await self.ensure_initialized()
         self.context.clear()
         await self.disable_stm()  # Disables and clears STM
         print("Context and STM cleared.")
@@ -2622,6 +2622,7 @@ class AsyncMemorySystem:
             except Exception as e:
                 print(f"Error closing external vector store handler: {e}")
             self.external_vector_store = None
+        await self.clear_all()
         self._is_initialized = False
         print("MemorySystem closed.")
 
