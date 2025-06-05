@@ -64,8 +64,8 @@ async def summarize_memory(
         system_message = DEFAULT_SYSTEM_MESSAGE
 
     history = [{
-        "role": "user",
-        "content": '\n'.join(
+        "role": "system",
+        "content": "互动内容:\n" + '\n'.join(
             f"{unit.source}-{unit.metadata['action']}: {unit.content}"
             for unit in memory_units
         )

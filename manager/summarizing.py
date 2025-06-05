@@ -121,7 +121,7 @@ async def summarize_memory_hierarchy(
                 content=summary_content,
                 creation_time=start_time,
                 end_time=end_time,
-                source=role,
+                source=f"{role}-summary",
                 rank=base_rank,
                 metadata={"action": "summary"},
                 group_id=root_id
@@ -402,7 +402,6 @@ async def summarize_long_term_memory(
         if session_id not in session_objects_map:
             print(f"Warning: Session {session_id} listed in LTM but not loaded. Skipping.")
             continue
-
         session_summary_unit = await memory_system._get_memory_unit(session_id, use_cache=True)
 
         if session_summary_unit and session_summary_unit.rank == 1:
@@ -478,7 +477,7 @@ async def summarize_long_term_memory(
         ltm.creation_time = root_ltm_unit.creation_time
         ltm.end_time = root_ltm_unit.end_time
         # LTM summary unit IDs are the new summaries created at rank 2
-        ltm.summary_unit_ids = new_ltm_summary_units
+        ltm.summary_unit_ids = [unit.id for unit in new_ltm_summary_units]
 
         # Combine all new units and updated units
         all_new_units = newly_created_session_summaries + new_ltm_summary_units

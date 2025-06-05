@@ -334,7 +334,6 @@ class AsyncMemorySystem:
         """Ensures the system is initialized before proceeding."""
         if not self._is_initialized:
             await self._async_initialize()
-            await self.start_session()
 
     def get_current_sesssion_id(self):
         return self._current_session_id
@@ -405,7 +404,7 @@ class AsyncMemorySystem:
                 if session_obj:
                     self._current_session_id = target_session_id
                     print(f"Resuming session: {target_session_id}")
-                    await self._restore_stm_from_session(self._current_session_id)
+                    await self._restore_session(self._current_session_id)
                     session_summary_unit = await self._get_memory_unit(self._current_session_id)
                     if session_summary_unit:
                         is_linked_to_ltm = False
@@ -522,7 +521,7 @@ class AsyncMemorySystem:
 
                     # Add embedding if available (for sqlite-vec, which upsert_memory_units handles)
                     if self.sqlite_handler.use_sqlite_vec and unit_id in embedding_cache_for_flush:
-                        unit_dict_for_upsert['embedding'] = embedding_cache_for_flush[unit_id].tolist()
+                        unit_dict_for_upsert['embedding'] = embedding_cache_for_flush[unit_id].flatten().tolist()
                     elif 'embedding' in unit_dict_for_upsert and not self.sqlite_handler.use_sqlite_vec:
                         del unit_dict_for_upsert['embedding']
 
@@ -578,27 +577,27 @@ class AsyncMemorySystem:
         vector_store_success = True  # Default true if no external VS or sqlite-vec
         if sqlite_success and self.vector_store and self.vector_store.vector_db_type != 'sqlite-vec':
             vector_store_success = False
-            try:
-                if self._deleted_memory_unit_ids:
-                    await self.vector_store.delete(ids=list(self._deleted_memory_unit_ids))
-                ext_upsert_dicts = []
-                for unit_id in self._mu_new_ids.union(self._mu_content_updated_ids):
-                    if unit_id in self.memory_units_cache and unit_id in embedding_cache_for_flush:
-                        unit, emb_np = self.memory_units_cache[unit_id], embedding_cache_for_flush[unit_id]
-                        udv = unit.to_dict()
-                        udv['embedding'] = emb_np.tolist()
-                        udv["creation_time"] = unit.creation_time.timestamp() if unit.creation_time else None
-                        udv["end_time"] = unit.end_time.timestamp() if unit.end_time else None
-                        ext_upsert_dicts.append(udv)
-                    elif unit_id in self.memory_units_cache: print(f"Warn: Embedding missing for {unit_id} for vector store upsert.")
-                if ext_upsert_dicts:
-                    await self.vector_store.upsert(ext_upsert_dicts)
-                await self.vector_store.flush()
-                print("External vector store operations successful.")
-                vector_store_success = True
-            except Exception as e:
-                print(f"Error during external vector store update: {e}")
-                vector_store_success = False
+            # try:
+            if self._deleted_memory_unit_ids:
+                await self.vector_store.delete(ids=list(self._deleted_memory_unit_ids))
+            ext_upsert_dicts = []
+            for unit_id in self._mu_new_ids.union(self._mu_content_updated_ids):
+                if unit_id in self.memory_units_cache and unit_id in embedding_cache_for_flush:
+                    unit, emb_np = self.memory_units_cache[unit_id], embedding_cache_for_flush[unit_id]
+                    udv = unit.to_dict()
+                    udv['embedding'] = emb_np.flatten().tolist()
+                    udv["creation_time"] = unit.creation_time.timestamp() if unit.creation_time else None
+                    udv["end_time"] = unit.end_time.timestamp() if unit.end_time else None
+                    ext_upsert_dicts.append(udv)
+                elif unit_id in self.memory_units_cache: print(f"Warn: Embedding missing for {unit_id} for vector store upsert.")
+            if ext_upsert_dicts:
+                await self.vector_store.upsert(ext_upsert_dicts)
+            await self.vector_store.flush()
+            print("External vector store operations successful.")
+            vector_store_success = True
+            # except Exception as e:
+            #     print(f"Error during external vector store update: {e}")
+            #     vector_store_success = False
 
         # --- Post-Persistence Cleanup ---
         if sqlite_success and vector_store_success:
@@ -848,7 +847,8 @@ class AsyncMemorySystem:
         """Stages a SessionMemory change in cache and tracking sets."""
         await self.ensure_initialized()
         if not session or not session.id: return
-        if session.id in self._deleted_session_memory_ids: return
+        if session.id in self._deleted_session_memory_ids:
+            return
         self.session_memories_cache[session.id] = session
         self._updated_session_memory_ids.add(session.id)
         self._deleted_session_memory_ids.discard(session.id)
@@ -1187,7 +1187,7 @@ class AsyncMemorySystem:
             self.external_chatbot_id, self.external_ltm_id, self.external_vector_store, self.external_sqlite_handler = None, None, None, None
             raise ValueError(f"Failed to enable external connection. Error: {e}") from e
 
-    async def _restore_stm_from_session(self, session_id: str):
+    async def _restore_session(self, session_id: str):
         """Async: Loads MemoryUnits from a session into STM, fetching embeddings."""
         await self.ensure_initialized()
         if not self._stm_enabled: return
@@ -1232,6 +1232,17 @@ class AsyncMemorySystem:
             else:
                 print(f"Warning: Memory unit {unit_id} from session {session_id} not found in SQLite.")
 
+        units_to_add_to_stm = sorted(
+            units_to_add_to_stm,
+            key=lambda x: x[0].creation_time if x[0].creation_time else datetime.datetime.min
+        )
+        for unit, _ in units_to_add_to_stm:
+            self.context.append(unit)
+            if len(self.context) > self._max_context_length:
+                evicted_unit = self.context.popleft()
+                if evicted_unit.id in self._context_ids:
+                    self._context_ids.remove(evicted_unit.id)
+
         print(f"Adding {len(units_to_add_to_stm)} units from session {session_id} to STM.")
         await self._add_units_to_stm(units_to_add_to_stm)  # Use the async version
 
@@ -1262,7 +1273,7 @@ class AsyncMemorySystem:
 
         if target_session_id:
             print(f"Attempting to restore STM from session: {target_session_id}")
-            await self._restore_stm_from_session(target_session_id)
+            await self._restore_session(target_session_id)
         else:
             print("STM enabled without restoring from a session.")
 
@@ -1613,43 +1624,43 @@ class AsyncMemorySystem:
             elif target_vector_store.vector_db_type == "sqlite-vec": filter_arg = filters.to_sqlite_where()
         search_params = target_vector_store.config.get("search_params", {"metric_type": "IP", "params": {"nprobe": 10}})
         if search_range is not None: search_params['search_range'] = search_range
-        # try:
-        vector_query_results = []
-        vs_output_fields = ["id", "embedding"]
-        if query_vector is not None:
-            vector_query_results = await target_vector_store.search(vectors=[query_vector], top_k=k_limit, expr=filter_arg, search_params=search_params, output_fields=vs_output_fields)
-        elif filter_arg:
-            vector_query_results = await target_vector_store.query(expr=filter_arg, output_fields=vs_output_fields, top_k=k_limit)
-        else: return []
-        unit_ids_from_vs, scores_map, embeddings_from_vs_map = [], {}, {}
-        for hit_data in vector_query_results:
-            uid = hit_data.get('id')
-            if not uid:
-                continue
-            unit_ids_from_vs.append(uid)
-            scores_map[uid] = float(hit_data.get('distance', 0.0))
-            if hit_data.get('embedding') is not None:
-                embeddings_from_vs_map[uid] = np.array(hit_data['embedding'])
-        if not unit_ids_from_vs:
-            return []
-        full_memory_units_dict: Dict[str, MemoryUnit] = {}
-        current_sql_handler = target_sqlite_handler if target_sqlite_handler else self.sqlite_handler
-        if current_sql_handler:
-            if not await current_sql_handler._get_connection():
-                raise
-            full_memory_units_dict = await current_sql_handler.load_memory_units(unit_ids_from_vs, include_edges=True)
-        for unit_id in unit_ids_from_vs:
-            unit = full_memory_units_dict.get(unit_id)
-            if unit:
-                score = scores_map.get(unit_id, 0.0)
-                embedding_np = embeddings_from_vs_map.get(unit_id)
-                if embedding_np is None and target_vector_store.vector_db_type == 'sqlite-vec' and current_sql_handler:
-                    emb_list = await self._generate_embedding_for_unit(unit,history_length=1)
-                    if emb_list:
-                        embedding_np = np.array(emb_list)
-                if embedding_np is not None:
-                    results_with_embeddings.append((unit, score, embedding_np))
-        # except Exception as e: print(f"Error during LTM query: {e}"); return []
+        try:
+            vector_query_results = []
+            vs_output_fields = ["id", "embedding"]
+            if query_vector is not None:
+                vector_query_results = await target_vector_store.search(vectors=[query_vector], top_k=k_limit, expr=filter_arg, search_params=search_params, output_fields=vs_output_fields)
+            elif filter_arg:
+                vector_query_results = await target_vector_store.query(expr=filter_arg, output_fields=vs_output_fields, top_k=k_limit)
+            else: return []
+            unit_ids_from_vs, scores_map, embeddings_from_vs_map = [], {}, {}
+            for hit_data in vector_query_results:
+                uid = hit_data.get('id')
+                if not uid:
+                    continue
+                unit_ids_from_vs.append(uid)
+                scores_map[uid] = float(hit_data.get('distance', 0.0))
+                if hit_data.get('embedding') is not None:
+                    embeddings_from_vs_map[uid] = np.array(hit_data['embedding'])
+            if not unit_ids_from_vs:
+                return []
+            full_memory_units_dict: Dict[str, MemoryUnit] = {}
+            current_sql_handler = target_sqlite_handler if target_sqlite_handler else self.sqlite_handler
+            if current_sql_handler:
+                if not await current_sql_handler._get_connection():
+                    raise
+                full_memory_units_dict = await current_sql_handler.load_memory_units(unit_ids_from_vs, include_edges=True)
+            for unit_id in unit_ids_from_vs:
+                unit = full_memory_units_dict.get(unit_id)
+                if unit:
+                    score = scores_map.get(unit_id, 0.0)
+                    embedding_np = embeddings_from_vs_map.get(unit_id)
+                    if embedding_np is None and target_vector_store.vector_db_type == 'sqlite-vec' and current_sql_handler:
+                        emb_list = await self._generate_embedding_for_unit(unit,history_length=1)
+                        if emb_list:
+                            embedding_np = np.array(emb_list)
+                    if embedding_np is not None:
+                        results_with_embeddings.append((unit, score, embedding_np))
+        except Exception as e: print(f"Error during LTM query: {e}"); return []
         if query_vector is not None: results_with_embeddings.sort(key=lambda x: x[1], reverse=True)
         return results_with_embeddings[:k_limit]
 
@@ -2029,35 +2040,33 @@ class AsyncMemorySystem:
         await self._flush_cache(force=True)  # Ensure latest state is persisted
 
         history_summary_unit: Optional[MemoryUnit] = None
-        if use_external_summary and self.external_vector_store and self.external_ltm_id:
+        if use_external_summary and self.external_sqlite_handler and self.external_ltm_id:
             try:
-                results = await self.external_vector_store.get(self.external_ltm_id)
-                if results:
-                    history_summary_unit = MemoryUnit.from_dict(results)
+                history_summary_unit = await self.external_sqlite_handler.load_memory_unit(self.external_ltm_id)
 
             except Exception as e:
                 print(f"Could not fetch external history summary: {e}")
-        try:
-            updated_ltm, new_units, updated_units = await summarize_long_term_memory(
-                memory_system=self,
-                ltm_id=self.ltm_id,
-                llm=self.llm,
-                history_memory=history_summary_unit,
-                role=role,
-                max_group_size=self.max_group_size,
-                max_token_count=self.max_token_count,
-                system_message=system_message
-            )
-            # Stage results
-            if updated_ltm: await self._stage_long_term_memory_update(updated_ltm)
-            if new_units: await self._stage_memory_units_update(new_units, operation='add')
-            if updated_units: await self._stage_memory_units_update(updated_units, operation='edge_update')
+        # try:
+        updated_ltm, new_units, updated_units = await summarize_long_term_memory(
+            memory_system=self,
+            ltm_id=self.ltm_id,
+            llm=self.llm,
+            history_memory=history_summary_unit,
+            role=role,
+            max_group_size=self.max_group_size,
+            max_token_count=self.max_token_count,
+            system_message=system_message
+        )
+        # Stage results
+        if updated_ltm: await self._stage_long_term_memory_update(updated_ltm)
+        if new_units: await self._stage_memory_units_update(new_units, operation='add')
+        if updated_units: await self._stage_memory_units_update(updated_units, operation='edge_update')
 
-            if new_units or updated_units or updated_ltm:
-                await self._flush_cache(force=True)  # Flush changes from summarization
+        if new_units or updated_units or updated_ltm:
+            await self._flush_cache(force=True)  # Flush changes from summarization
 
-        except Exception as e:
-            print(f"Error during LTM {self.ltm_id} summarization orchestration: {e}")
+        # except Exception as e:
+        #     print(f"Error during LTM {self.ltm_id} summarization orchestration: {e}")
 
     async def summarize_session(self, session_id: str, role: str = "ai", system_message: Optional[str] = None):
         """Async: Orchestrates summarizing a specific session."""
@@ -2253,7 +2262,7 @@ class AsyncMemorySystem:
                         "last_visit": unit.last_visit, "visit_count": unit.visit_count,
                         "never_delete": unit.never_delete,
                         "rank": unit.rank,
-                        "embedding": embedding_np.tolist(),
+                        "embedding": embedding_np.flatten().tolist(),
                         "creation_time": unit.creation_time.timestamp() if unit.creation_time else None,
                         "end_time": unit.end_time.timestamp() if unit.end_time else None,
                     }
@@ -2301,7 +2310,7 @@ class AsyncMemorySystem:
                             f"Error generating embedding for LTM unit {unit.id} for VSS, embedding will be null in DB: {embedding_np}")
                         unit_dict_for_sqlite['embedding'] = None  # Store None if embedding failed
                     else:
-                        unit_dict_for_sqlite['embedding'] = embedding_np.tolist()
+                        unit_dict_for_sqlite['embedding'] = embedding_np.flatten().tolist()
 
                     # Ensure datetimes are ISO strings for sqlite_handler's expected format
                     unit_dict_for_sqlite[
@@ -2379,82 +2388,82 @@ class AsyncMemorySystem:
 
         # conn = await self.sqlite_handler._get_connection()
 
-        # try:
-        # Load from JSON (wrap sync file IO)
-        json_units_dict = await asyncio.to_thread(json_handler.load_memory_units_json, self.chatbot_id,
-                                                  input_base_path)
-        mus = [MemoryUnit.from_dict(mu_dict) for mu_dict in json_units_dict.values()]
-
-        json_sessions_dict = await asyncio.to_thread(json_handler.load_session_memories_json, self.chatbot_id,
-                                                     input_base_path)
-        sms = [SessionMemory.from_dict(sm_dict) for sm_dict in json_sessions_dict.values()]
-
-        json_ltms_dict = await asyncio.to_thread(json_handler.load_long_term_memories_json, self.chatbot_id,
-                                                 input_base_path)
-        ltms = [LongTermMemory.from_dict(ltm_dict) for ltm_dict in json_ltms_dict.values()]
-
-        print(f"Loaded {len(mus)} units, {len(sms)} sessions, {len(ltms)} LTMs from JSON.")
-
-        # Prepare data for async SQLite handler (expects dicts with specific formats)
-        units_to_insert = [mu.to_dict() for mu in mus]
-        for unit_dict in units_to_insert:  # Convert datetimes
-            unit_dict["creation_time"] = unit_dict["creation_time"] if unit_dict["creation_time"] else None
-            unit_dict["end_time"] = unit_dict["end_time"] if unit_dict["end_time"] else None
-            if self.vector_store and self.vector_store.vector_db_type == 'sqlite-vec':
-                unit_dict['embedding'] = None  # Will be generated if needed on query/sync
-
-        sessions_to_insert = [sm.to_dict() for sm in sms]
-        for session_dict in sessions_to_insert:  # Convert datetimes
-            session_dict["creation_time"] = session_dict["creation_time"] if session_dict["creation_time"] else None
-            session_dict["end_time"] = session_dict["end_time"] if session_dict["end_time"] else None
-
-        ltms_to_insert = [ltm.to_dict() for ltm in ltms]
-        for ltm_dict in ltms_to_insert:  # Convert datetimes
-            ltm_dict["creation_time"] = ltm_dict["creation_time"] if ltm_dict["creation_time"] else None
-            ltm_dict["end_time"] = ltm_dict["end_time"] if ltm_dict["end_time"] else None
-
-        # Save to SQLite using async handlers
-        await self.sqlite_handler.set_foreign_keys(False)
-        await self.sqlite_handler.begin()
         try:
-            print("Saving to SQLite...")
-            if ltms_to_insert:
-                await self.sqlite_handler.upsert_long_term_memories(ltms_to_insert)
-            if sessions_to_insert:
-                await self.sqlite_handler.upsert_session_memories(sessions_to_insert)
-            if units_to_insert:
-                await self.sqlite_handler.upsert_memory_units(units_to_insert)
+            # Load from JSON (wrap sync file IO)
+            json_units_dict = await asyncio.to_thread(json_handler.load_memory_units_json, self.chatbot_id,
+                                                      input_base_path)
+            mus = [MemoryUnit.from_dict(mu_dict) for mu_dict in json_units_dict.values()]
 
-            await self.sqlite_handler.commit()
-            print("Transaction committed.")
-        except Exception as e:
-            print(f"Error during transaction, rolling back: {e}")
-            await self.sqlite_handler.rollback() # Rollback on error
-            raise
+            json_sessions_dict = await asyncio.to_thread(json_handler.load_session_memories_json, self.chatbot_id,
+                                                         input_base_path)
+            sms = [SessionMemory.from_dict(sm_dict) for sm_dict in json_sessions_dict.values()]
 
-        finally:
-            print("Re-enabling foreign keys...")
-            await self.sqlite_handler.set_foreign_keys(True)
-        print("Checking foreign key integrity after conversion...")
-        fk_errors = await self.sqlite_handler.check_foreign_keys()
-        if fk_errors:
-            print(f"WARNING: Foreign key check found {len(fk_errors)} issues after conversion:")
-            for error in fk_errors:
-                print(
-                    f"  - Table: {error.get('table')}, RowID: {error.get('rowid')}, Parent: {error.get('parent')}, FK_ID: {error.get('fkid')}")
-        else:
-            print("Foreign key integrity check passed.")
+            json_ltms_dict = await asyncio.to_thread(json_handler.load_long_term_memories_json, self.chatbot_id,
+                                                     input_base_path)
+            ltms = [LongTermMemory.from_dict(ltm_dict) for ltm_dict in json_ltms_dict.values()]
 
-        print("JSON to SQLite conversion complete.")
-        print("Reloading current state from SQLite...")
-        await self._load_initial_state()
+            print(f"Loaded {len(mus)} units, {len(sms)} sessions, {len(ltms)} LTMs from JSON.")
+
+            # Prepare data for async SQLite handler (expects dicts with specific formats)
+            units_to_insert = [mu.to_dict() for mu in mus]
+            for unit_dict in units_to_insert:  # Convert datetimes
+                unit_dict["creation_time"] = unit_dict["creation_time"] if unit_dict["creation_time"] else None
+                unit_dict["end_time"] = unit_dict["end_time"] if unit_dict["end_time"] else None
+                if self.vector_store and self.vector_store.vector_db_type == 'sqlite-vec':
+                    unit_dict['embedding'] = None  # Will be generated if needed on query/sync
+
+            sessions_to_insert = [sm.to_dict() for sm in sms]
+            for session_dict in sessions_to_insert:  # Convert datetimes
+                session_dict["creation_time"] = session_dict["creation_time"] if session_dict["creation_time"] else None
+                session_dict["end_time"] = session_dict["end_time"] if session_dict["end_time"] else None
+
+            ltms_to_insert = [ltm.to_dict() for ltm in ltms]
+            for ltm_dict in ltms_to_insert:  # Convert datetimes
+                ltm_dict["creation_time"] = ltm_dict["creation_time"] if ltm_dict["creation_time"] else None
+                ltm_dict["end_time"] = ltm_dict["end_time"] if ltm_dict["end_time"] else None
+
+            # Save to SQLite using async handlers
+            await self.sqlite_handler.set_foreign_keys(False)
+            await self.sqlite_handler.begin()
+            try:
+                print("Saving to SQLite...")
+                if ltms_to_insert:
+                    await self.sqlite_handler.upsert_long_term_memories(ltms_to_insert)
+                if sessions_to_insert:
+                    await self.sqlite_handler.upsert_session_memories(sessions_to_insert)
+                if units_to_insert:
+                    await self.sqlite_handler.upsert_memory_units(units_to_insert)
+
+                await self.sqlite_handler.commit()
+                print("Transaction committed.")
+            except Exception as e:
+                print(f"Error during transaction, rolling back: {e}")
+                await self.sqlite_handler.rollback() # Rollback on error
+                raise
+
+            finally:
+                print("Re-enabling foreign keys...")
+                await self.sqlite_handler.set_foreign_keys(True)
+            print("Checking foreign key integrity after conversion...")
+            fk_errors = await self.sqlite_handler.check_foreign_keys()
+            if fk_errors:
+                print(f"WARNING: Foreign key check found {len(fk_errors)} issues after conversion:")
+                for error in fk_errors:
+                    print(
+                        f"  - Table: {error.get('table')}, RowID: {error.get('rowid')}, Parent: {error.get('parent')}, FK_ID: {error.get('fkid')}")
+            else:
+                print("Foreign key integrity check passed.")
+
+            print("JSON to SQLite conversion complete.")
+            print("Reloading current state from SQLite...")
+            await self._load_initial_state()
 
         # Commit should be handled within the insert methods by the handler
 
-        # except FileNotFoundError:
-        #     print(f"Error: JSON files not found in {input_base_path} for chatbot {self.chatbot_id}.")
-        # except Exception as e:
-        #     print(f"Error during JSON to SQLite conversion: {e}")
+        except FileNotFoundError:
+            print(f"Error: JSON files not found in {input_base_path} for chatbot {self.chatbot_id}.")
+        except Exception as e:
+            print(f"Error during JSON to SQLite conversion: {e}")
 
     async def convert_json_to_db(self, input_dir: Optional[str] = None, embedding_history_length: int = 1,
                                      batch_size: int = 100):
@@ -2500,7 +2509,7 @@ class AsyncMemorySystem:
                         error_count += 1
                         continue
 
-                    embedding = result.tolist()  # result should be numpy array
+                    embedding = result.flatten().tolist()  # result should be numpy array
                     # Prepare data dict
                     unit_dict_vec = unit.to_dict()
                     unit_dict_vec['embedding'] = embedding
@@ -2573,14 +2582,14 @@ class AsyncMemorySystem:
         # Auto-summarize
         if auto_summarize and self.llm:
             print("Performing final auto-summarization...")
-            try:
-                # Ensure external connection is available if needed for history
-                # Might need to pass external config here or ensure it's enabled earlier
-                await self.summarize_long_term_memory(use_external_summary=(self.external_vector_store is not None), role=role, system_message=system_message)
-                print("Flushing cache after final summarization...")
-                await self._flush_cache(force=True)  # Flush again after summarization
-            except Exception as e:
-                print(f"Error during final auto-summarization: {e}")
+            # try:
+            # Ensure external connection is available if needed for history
+            # Might need to pass external config here or ensure it's enabled earlier
+            await self.summarize_long_term_memory(use_external_summary=False, role=role, system_message=system_message)
+            print("Flushing cache after final summarization...")
+            await self._flush_cache(force=True)  # Flush again after summarization
+            # except Exception as e:
+            #     print(f"Error during final auto-summarization: {e}")
 
         # Close handlers
         if self.sqlite_handler:

@@ -13,7 +13,6 @@ class _AsyncRunner:
     def __init__(self):
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
-        # Event to signal that the loop in the new thread is ready
         self._loop_ready_event = threading.Event()
 
     def _start_loop_thread_if_needed(self):
@@ -23,59 +22,140 @@ class _AsyncRunner:
             self._thread = threading.Thread(target=self._run_loop_target, daemon=True)
             self._thread.start()
             # Wait for the loop to be set up in the new thread
-            self._loop_ready_event.wait(timeout=5)  # Wait up to 5 seconds
-            if not self._loop_ready_event.is_set():
-                raise RuntimeError("AsyncRunner event loop thread failed to start in time.")
+            if not self._loop_ready_event.wait(timeout=5):
+                print(f"ERROR: AsyncRunner event loop thread {self._thread.ident if self._thread else 'Unknown'} failed to start in time. Loop object: {self._loop}")
+                if self._thread and self._thread.is_alive():
+                    if self._loop and self._loop.is_running():
+                         try:
+                            self._loop.call_soon_threadsafe(self._loop.stop)
+                         except Exception as e_stop:
+                             print(f"ERROR: AsyncRunner: Exception trying to stop unresponsive loop: {e_stop}")
+                    self._thread.join(timeout=2)
+                self._thread = None
+                # self._loop = None # Mark loop as unusable (already done in shutdown, or will be None if never assigned in new thread)
+                raise RuntimeError(f"AsyncRunner event loop thread failed to start in time for loop {id(self._loop if self._loop else None)}.")
+            print(f"AsyncRunner: Event loop {id(self._loop)} is ready in thread {self._thread.ident if self._thread else 'Unknown'}.")
 
     def _run_loop_target(self):
-        if not self._loop:  # Should have been set before starting thread
-            print("ERROR: _AsyncRunner._loop is None in _run_loop_target")
+        loop_for_this_thread = self._loop
+
+        if not loop_for_this_thread:
+            print(
+                f"ERROR: _AsyncRunner._loop was None when _run_loop_target for thread {threading.get_ident()} started.")
+            # self._loop_ready_event.set()
             return
-        asyncio.set_event_loop(self._loop)
-        self._loop_ready_event.set()  # Signal that loop is set and ready
+
+        current_thread_id = threading.get_ident()
+        print(f"AsyncRunner: Thread {current_thread_id} starting to manage loop {id(loop_for_this_thread)}.")
+        asyncio.set_event_loop(loop_for_this_thread)
+        self._loop_ready_event.set()
+
         try:
-            self._loop.run_forever()
+            loop_for_this_thread.run_forever()
+        except Exception as e_run_forever:
+            print(
+                f"ERROR: Exception in loop {id(loop_for_this_thread)}.run_forever() in thread {current_thread_id}: {e_run_forever}")
         finally:
+            print(
+                f"AsyncRunner: Loop {id(loop_for_this_thread)} run_forever finished or errored. Starting cleanup in thread {current_thread_id}.")
             try:
-                tasks = asyncio.all_tasks(self._loop)
-                for task in tasks:
-                    task.cancel()
+                tasks = asyncio.all_tasks(loop_for_this_thread)
                 if tasks:
-                    self._loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
-            except Exception as e:
-                print(f"Error during task cleanup in _AsyncRunner: {e}")
+                    print(
+                        f"AsyncRunner: Cancelling {len(tasks)} tasks for loop {id(loop_for_this_thread)} in thread {current_thread_id}.")
+                    for task_idx, task in enumerate(tasks):
+                        if not task.done():
+                            task.cancel()
+                    loop_for_this_thread.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
+                    print(
+                        f"AsyncRunner: Tasks for loop {id(loop_for_this_thread)} cancelled and gathered in thread {current_thread_id}.")
+                else:
+                    print(
+                        f"AsyncRunner: No tasks to cancel for loop {id(loop_for_this_thread)} in thread {current_thread_id}.")
+            except RuntimeError as e_cleanup_tasks:
+                print(
+                    f"Error during task cleanup for loop {id(loop_for_this_thread)} in thread {current_thread_id}: {e_cleanup_tasks} (Possibly loop already closed or other issue)")
+            except Exception as e_cleanup_tasks_other:
+                print(
+                    f"Generic error during task cleanup for loop {id(loop_for_this_thread)} in thread {current_thread_id}: {e_cleanup_tasks_other}")
             finally:
-                if self._loop and not self._loop.is_closed():
-                    self._loop.close()
+                if not loop_for_this_thread.is_closed():
+                    loop_for_this_thread.close()
+                    print(f"AsyncRunner: Event loop {id(loop_for_this_thread)} closed in _run_loop_target thread {current_thread_id}.")
+                else:
+                    print(f"AsyncRunner: Event loop {id(loop_for_this_thread)} was already closed before explicit close in _run_loop_target thread {current_thread_id}.")
 
     def run_coroutine(self, coro_func: Callable, *args: Any, **kwargs: Any) -> Any:
-        self._start_loop_thread_if_needed()
+        self._start_loop_thread_if_needed()  # This will raise RuntimeError if timeout occurs
 
-        if not self._loop or self._loop.is_closed():
-            raise RuntimeError("AsyncRunner event loop is not available or closed.")
+        if not self._loop or not self._loop.is_running():
+            loop_status = "None" if not self._loop else ("running" if self._loop.is_running() else "not running/closed")
+            print(
+                f"ERROR: AsyncRunner event loop is not available or not running after start attempt. Loop: {id(self._loop) if self._loop else 'N/A'}, Status: {loop_status}")
+            raise RuntimeError(
+                f"AsyncRunner event loop is not available or not running after start attempt. Loop ID: {id(self._loop) if self._loop else 'N/A'}, Status: {loop_status}")
 
         coroutine_obj = coro_func(*args, **kwargs)
         future_obj: Future = asyncio.run_coroutine_threadsafe(coroutine_obj, self._loop)
         try:
             return future_obj.result(timeout=300)
         except TimeoutError as e:
-            print(f"Timeout waiting for async operation: {coro_func.__name__}")
+            print(f"Timeout waiting for async operation: {coro_func.__name__} using loop {id(self._loop)}")
+            # Attempt to cancel the coroutine future on timeout
+            if not future_obj.done():
+                future_obj.cancel()
             raise TimeoutError(f"Async operation {coro_func.__name__} timed out.") from e
         except Exception as e:
-            raise e
+            # Includes CancelledError if future_obj was cancelled by another mechanism
+            print(
+                f"Exception from async operation {coro_func.__name__} using loop {id(self._loop)}: {type(e).__name__} - {e}")
+            raise  # Re-raise the original exception
 
     def shutdown(self, wait=True):
-        if self._loop and self._loop.is_running():
-            self._loop.call_soon_threadsafe(self._loop.stop)
+        # Capture current thread and loop for logging and operations
+        thread_to_join = self._thread
+        loop_to_stop = self._loop
 
-        if self._thread and self._thread.is_alive():
+        current_thread_id = threading.get_ident()
+        print(
+            f"AsyncRunner: Shutdown requested from thread {current_thread_id}. Target thread: {thread_to_join.ident if thread_to_join else 'None'}, Target loop: {id(loop_to_stop) if loop_to_stop else 'None'}")
+
+        if loop_to_stop and loop_to_stop.is_running():
+            print(f"AsyncRunner: Requesting loop {id(loop_to_stop)} to stop (from thread {current_thread_id}).")
+            try:
+                loop_to_stop.call_soon_threadsafe(loop_to_stop.stop)
+            except RuntimeError as e_stop_runtime:  # e.g. if loop is closing/closed
+                print(f"AsyncRunner: Runtime error stopping loop {id(loop_to_stop)}: {e_stop_runtime}")
+            except Exception as e_stop_generic:
+                print(f"AsyncRunner: Generic error stopping loop {id(loop_to_stop)}: {e_stop_generic}")
+        elif loop_to_stop:
+            print(
+                f"AsyncRunner: Loop {id(loop_to_stop)} exists but is not running. No stop signal sent (from thread {current_thread_id}).")
+        else:
+            print(f"AsyncRunner: No loop instance to stop (from thread {current_thread_id}).")
+
+        if thread_to_join and thread_to_join.is_alive():
+            print(f"AsyncRunner: Joining thread {thread_to_join.ident} (from thread {current_thread_id}).")
             if wait:
-                self._thread.join(timeout=5)
-            if self._thread.is_alive():
-                print("Warning: _AsyncRunner thread did not shut down cleanly after stop signal.")
+                thread_to_join.join(timeout=10)  # Increased timeout for graceful task cancellation
+            if thread_to_join.is_alive():
+                print(
+                    f"Warning: _AsyncRunner thread {thread_to_join.ident} did not shut down cleanly after stop signal and join timeout (requested from thread {current_thread_id}).")
+            else:
+                print(
+                    f"AsyncRunner: Thread {thread_to_join.ident} joined successfully (requested from thread {current_thread_id}).")
+        elif thread_to_join:
+            print(
+                f"AsyncRunner: Thread {thread_to_join.ident} was not alive (requested from thread {current_thread_id}).")
+        else:
+            print(f"AsyncRunner: No thread instance to join (requested from thread {current_thread_id}).")
 
+        # These should always be reset to allow for a clean restart by _start_loop_thread_if_needed
         self._thread = None
         self._loop = None
+        print(
+            f"AsyncRunner: Shutdown complete. _thread and _loop are None (requested from thread {current_thread_id}).")
+
 
 class MemorySystem:
     def __init__(self,
@@ -220,9 +300,9 @@ class MemorySystem:
         self._run_async_delegate(self._async_system.enable_external_connection, external_chatbot_id, external_ltm_id, external_vector_store_config, external_sqlite_base_path)
 
     # --- Short-Term Memory (STM) ---
-    def _restore_stm_from_session(self, session_id: str):
+    def _restore_session(self, session_id: str):
         """Sync wrapper for internal async _restore_stm_from_session."""
-        self._run_async_delegate(self._async_system._restore_stm_from_session, session_id)
+        self._run_async_delegate(self._async_system._restore_session, session_id)
 
     def enable_stm(self, capacity: int = 200, restore_session_id: Optional[str] = None):
         """Sync wrapper for async enable_stm."""
@@ -406,7 +486,7 @@ class MemorySystem:
         """Sync wrapper for async close."""
         self._run_async_delegate(self._async_system.close, auto_summarize, role, system_message = system_message)
         # Shutdown the async runner after closing the system
-        self._runner.shutdown()
+        # self._runner.shutdown()
 
     # --- Helpers ---
     def if_stm_enabled(self):

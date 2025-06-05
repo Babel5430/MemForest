@@ -816,6 +816,8 @@ class AsyncSQLiteHandler:
             await conn_or_cursor.execute("DELETE FROM ltm_summary_unit_membership WHERE ltm_id = ?", (ltm_id,))
         ids_to_add = [summary_unit_ids] if isinstance(summary_unit_ids, str) else (summary_unit_ids or [])
         if ids_to_add:
+            print(ltm_id, type(ltm_id))
+            print(ids_to_add, type(ids_to_add))
             await conn_or_cursor.executemany(
                 "INSERT OR IGNORE INTO ltm_summary_unit_membership (ltm_id, summary_unit_id) VALUES (?, ?)",
                 [(ltm_id, su_id) for su_id in ids_to_add])

@@ -1,6 +1,7 @@
 import asyncio
 from typing import Dict, Any, List, Optional, Set, Tuple
 from datetime import datetime
+import numpy as np
 
 try:
     from pymilvus import Collection, connections, FieldSchema, DataType, CollectionSchema, utility
@@ -844,79 +845,79 @@ class ChromaHandler(AsyncVectorStoreBackend):
         if isinstance(search_range, tuple) and len(search_range) == 2:
             min_sim, max_sim = search_range
 
-        # try:
-        fetch_limit = top_k
-        if search_range is not None:
-            fetch_limit = max(top_k, 20)
-        results = await self._run_sync(collection.query,
-                                       query_embeddings=[query_vector] if query_vector is not None else None,
-                                       query_texts=None,
-                                       n_results=fetch_limit,
-                                       where=final_where,
-                                       where_document=where_document,
-                                       include=include_params if include_params else None
-                                       )
-        all_hits_from_query = []
-        # print(type(results))
-        # print(results)
-        if results and results.get('ids'):
-            ids = results['ids'][0]
-            embeddings = results.get('embeddings', [[]])[0]
-            metadatas = results.get('metadatas', [[]])[0]
-            documents = results.get('documents', [[]])[0]
-            distances = results.get('distances', [[]])[0]
+        try:
+            fetch_limit = top_k
+            if search_range is not None:
+                fetch_limit = max(top_k, 20)
+            results = await self._run_sync(collection.query,
+                                           query_embeddings=[query_vector] if query_vector is not None else None,
+                                           query_texts=None,
+                                           n_results=fetch_limit,
+                                           where=final_where,
+                                           where_document=where_document,
+                                           include=include_params if include_params else None
+                                           )
+            all_hits_from_query = []
+            # print(type(results))
+            # print(results)
+            if results and results.get('ids'):
+                ids = results['ids'][0]
+                embeddings = results.get('embeddings', [[]])[0]
+                metadatas = results.get('metadatas', [[]])[0]
+                documents = results.get('documents', [[]])[0]
+                distances = results.get('distances', [[]])[0]
 
-            for i in range(len(ids)):
-                hit_id = ids[i]
-                hit_dict = {"id": hit_id}
-                distance = distances[i] if distances is not None and i < len(distances) and distances[
-                    i] is not None else None
-                score = 1.0 - distance if distance is not None is not None else 0.0
-                hit_dict['distance'] = 1 - distance
-                if embeddings is not None and i < len(embeddings) and embeddings[i] is not None:
-                    hit_dict['embedding'] = embeddings[i]
-                if documents and i < len(documents) and documents[i] is not None:
-                    hit_dict['content'] = documents[i]
-                if metadatas and i < len(metadatas) and metadatas[i] is not None:
-                    item_metadata = metadatas[i]
-                    item_metadata_reassembled = _reassemble_metadata(item_metadata, self._standard_memory_unit_attrs)
-                    if not output_fields:
-                        hit_dict.update(item_metadata_reassembled)
-                    else:
-                        if 'metadata' in output_fields:
-                            hit_dict['metadata'] = item_metadata_reassembled.get('metadata', {})
-                        all_possible_metadata_keys = set(
-                            item_metadata_reassembled.keys()) - self._standard_memory_unit_attrs.union(
-                            {'id', 'content', 'embedding', 'distance', 'score'})
-                        standard_metadata_fields = self._standard_memory_unit_attrs - {'id', 'content', 'embedding',
-                                                                                       'metadata'}
-                        for field in output_fields:
-                            if field in ['id', 'embedding', 'content']: continue
-                            if field in standard_metadata_fields and field in item_metadata_reassembled:
-                                hit_dict[field] = item_metadata_reassembled[field]
-                            elif field in all_possible_metadata_keys and field in item_metadata_reassembled:
-                                hit_dict[field] = item_metadata_reassembled[field]
-                            elif field == 'score':
-                                hit_dict['score'] = score
-                            else:
-                                print(f"Warning: field {field} is not in the database. Skip.")
+                for i in range(len(ids)):
+                    hit_id = ids[i]
+                    hit_dict = {"id": hit_id}
+                    distance = distances[i] if distances is not None and i < len(distances) and distances[
+                        i] is not None else None
+                    score = 1.0 - distance if distance is not None is not None else 0.0
+                    hit_dict['distance'] = 1 - distance
+                    if embeddings is not None and i < len(embeddings) and embeddings[i] is not None:
+                        hit_dict['embedding'] = embeddings[i]
+                    if documents and i < len(documents) and documents[i] is not None:
+                        hit_dict['content'] = documents[i]
+                    if metadatas and i < len(metadatas) and metadatas[i] is not None:
+                        item_metadata = metadatas[i]
+                        item_metadata_reassembled = _reassemble_metadata(item_metadata, self._standard_memory_unit_attrs)
+                        if not output_fields:
+                            hit_dict.update(item_metadata_reassembled)
+                        else:
+                            if 'metadata' in output_fields:
+                                hit_dict['metadata'] = item_metadata_reassembled.get('metadata', {})
+                            all_possible_metadata_keys = set(
+                                item_metadata_reassembled.keys()) - self._standard_memory_unit_attrs.union(
+                                {'id', 'content', 'embedding', 'distance', 'score'})
+                            standard_metadata_fields = self._standard_memory_unit_attrs - {'id', 'content', 'embedding',
+                                                                                           'metadata'}
+                            for field in output_fields:
+                                if field in ['id', 'embedding', 'content']: continue
+                                if field in standard_metadata_fields and field in item_metadata_reassembled:
+                                    hit_dict[field] = item_metadata_reassembled[field]
+                                elif field in all_possible_metadata_keys and field in item_metadata_reassembled:
+                                    hit_dict[field] = item_metadata_reassembled[field]
+                                elif field == 'score':
+                                    hit_dict['score'] = score
+                                else:
+                                    print(f"Warning: field {field} is not in the database. Skip.")
 
-                all_hits_from_query.append(hit_dict)
-        filtered_hits = []
-        for hit in all_hits_from_query:
-            score = hit.get('distance', 0.0)
-            passes_range_filter = True
-            if (min_sim is not None and score < min_sim) or \
-                    (max_sim is not None and score > max_sim):
-                passes_range_filter = False
-            if passes_range_filter:
-                filtered_hits.append(hit)
-        filtered_hits.sort(key=lambda x: x.get('distance', -float('inf')) if 'distance' in x else -float('inf'),
-                           reverse=True)
-        return filtered_hits[:top_k]
-        # except Exception as e:
-        #     print(f"ChromaHandler: Error during search: {e}")
-        #     return []
+                    all_hits_from_query.append(hit_dict)
+            filtered_hits = []
+            for hit in all_hits_from_query:
+                score = hit.get('distance', 0.0)
+                passes_range_filter = True
+                if (min_sim is not None and score < min_sim) or \
+                        (max_sim is not None and score > max_sim):
+                    passes_range_filter = False
+                if passes_range_filter:
+                    filtered_hits.append(hit)
+            filtered_hits.sort(key=lambda x: x.get('distance', -float('inf')) if 'distance' in x else -float('inf'),
+                               reverse=True)
+            return filtered_hits[:top_k]
+        except Exception as e:
+            print(f"ChromaHandler: Error during search: {e}")
+            return []
 
     async def flush(self, collection: Any):
         """Flushes Chroma collection asynchronously."""
@@ -971,6 +972,11 @@ class QdrantHandler(AsyncVectorStoreBackend):
         """Asynchronously initializes Qdrant client."""
         if not QDRANT_AVAILABLE:
             raise RuntimeError("Qdrant client not available.")
+
+        self._query_vector_name = config.get("vector_name")
+        if self._query_vector_name == "":
+            self._query_vector_name = None
+
         path = config.get("path")
         location = config.get("location", ':memory:')  # Can be 'localhost:6333' or ':memory:'
         url = config.get("url")
@@ -1000,7 +1006,10 @@ class QdrantHandler(AsyncVectorStoreBackend):
 
             await self._run_sync(self._client.get_collections)
             self._connected = True
-            print("QdrantHandler: Connection verified.")
+            if self._query_vector_name:
+                print(f"QdrantHandler: Configured to use vector name '{self._query_vector_name}' for queries.")
+            else:
+                print("QdrantHandler: Configured to use default unnamed vector for queries.")
 
         except Exception as e:
             print(f"QdrantHandler: Failed to initialize client: {e}")
@@ -1114,7 +1123,8 @@ class QdrantHandler(AsyncVectorStoreBackend):
                     elif not isinstance(payload['end_time'], (int, float, type(None))):
                         print(
                             f"Warning: end_time for {point_id} is not a datetime, string, number or None. Storing as is.")
-
+                if isinstance(vector, np.ndarray):
+                    vector = vector.flatten().tolist()
                 points_to_upsert.append(
                     PointStruct(
                         id=point_id,
@@ -1133,7 +1143,7 @@ class QdrantHandler(AsyncVectorStoreBackend):
                                             collection_name=collection_name,
                                             wait=flush,
                                             points=points_to_upsert)
-            # print(f"QdrantHandler: Upserted {len(points_to_upsert)} points. Status: {response.status}")
+            print(f"QdrantHandler: Upserted {len(points_to_upsert)} points. Status: {response.status}")
         except Exception as e:
             print(f"QdrantHandler: Error during upsert: {e}")
             raise
@@ -1222,7 +1232,7 @@ class QdrantHandler(AsyncVectorStoreBackend):
                     break
                 for point in points:
                     if len(all_results) >= top_k: break
-                    item_dict = {"id": str(point.id), "score": point.score if point.score is not None else 0.0}
+                    item_dict = {"id": str(point.id), "score":  0.0}
                     if point.payload:
                         item_dict.update(point.payload)
                     if point.vector is not None:
@@ -1261,7 +1271,7 @@ class QdrantHandler(AsyncVectorStoreBackend):
             if points and len(points) > 0:
                 hit_data = points[0]
                 item_dict = {"id": str(hit_data.id),
-                             "score": hit_data.score if hit_data.score is not None else 0.0}  # Score might be None in retrieve
+                             "score": 0.0}
                 if hit_data.payload:
                     item_dict.update(hit_data.payload)
                 if hit_data.vector:
@@ -1314,6 +1324,15 @@ class QdrantHandler(AsyncVectorStoreBackend):
             print("Warning: Qdrant search currently only fully supports searching with a single query vector.")
 
         query_vector = vectors[0]
+        if isinstance(query_vector, np.ndarray):
+            # print(query_vector.shape)
+            query_vector = query_vector.flatten().tolist()
+            # print(len(query_vector))
+
+        # if self._query_vector_name:
+        #     query_vector = (self._query_vector_name, query_vector)
+        # else:
+        #     pass
 
         if expr is not None and not isinstance(expr, Filter):
             print(
@@ -1352,36 +1371,36 @@ class QdrantHandler(AsyncVectorStoreBackend):
         if with_vectors and isinstance(with_payload,
                                        models.PayloadSelectorInclude) and "embedding" in with_payload.include:
             with_payload.include.remove("embedding")
-        try:
-            search_result: List[ScoredPoint] = await self._run_sync(self._client.search,
-                                                                    collection_name=collection_name,
-                                                                    query_vector=query_vector,
-                                                                    query_filter=filter_arg,
-                                                                    limit=fetch_limit,
-                                                                    with_payload=with_payload,
-                                                                    with_vectors=with_vectors,
-                                                                    search_params=effective_search_params,
-                                                                    score_threshold=score_threshold_arg
-                                                                    )
+        # try:
+        search_result: List[ScoredPoint] = await self._run_sync(self._client.search,
+                                                                collection_name=collection_name,
+                                                                query_vector=query_vector,
+                                                                query_filter=filter_arg,
+                                                                limit=fetch_limit,
+                                                                with_payload=with_payload,
+                                                                with_vectors=with_vectors,
+                                                                search_params=effective_search_params,
+                                                                score_threshold=score_threshold_arg
+                                                                )
 
-            all_hits = []
-            for hit in search_result:
-                item_dict = {"id": str(hit.id), "distance": float(hit.score)}
-                if hit.payload:
-                    item_dict.update(hit.payload)
-                if hit.vector:
-                    item_dict['embedding'] = hit.vector
-                all_hits.append(item_dict)
+        all_hits = []
+        for hit in search_result:
+            item_dict = {"id": str(hit.id), "distance": float(hit.score)}
+            if hit.payload:
+                item_dict.update(hit.payload)
+            if hit.vector:
+                item_dict['embedding'] = hit.vector
+            all_hits.append(item_dict)
 
-            if perform_post_filtering and max_sim is not None:
-                filtered_hits = [hit for hit in all_hits if hit.get('distance', -float('inf')) <= max_sim]
-            else:
-                filtered_hits = all_hits
-            filtered_hits.sort(key=lambda x: x.get('distance', -float('inf')), reverse=True)
-            return filtered_hits[:top_k]
-        except Exception as e:
-            print(f"QdrantHandler: Error during search: {e}")
-            return []
+        if perform_post_filtering and max_sim is not None:
+            filtered_hits = [hit for hit in all_hits if hit.get('distance', -float('inf')) <= max_sim]
+        else:
+            filtered_hits = all_hits
+        filtered_hits.sort(key=lambda x: x.get('distance', -float('inf')), reverse=True)
+        return filtered_hits[:top_k]
+        # except Exception as e:
+        #     print(f"QdrantHandler: Error during search: {e}")
+        #     return []
 
     async def flush(self, collection_name: str):
         """Explicitly flushes data to persistent storage (not typically needed with async client ops)."""
